@@ -79,6 +79,7 @@ func initGate(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL st
 		return nil, false, fmt.Errorf("find git root: %w", err)
 	}
 	absRoot := gitRoot
+	var confirmedFork refreshRemote
 	if forkLocal {
 		originURL, err := confirmedForkOrigin(ctx, absRoot)
 		if err != nil {
@@ -86,6 +87,10 @@ func initGate(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL st
 		}
 		if safeurl.Redact(originURL) != originURL {
 			return nil, false, fmt.Errorf("--fork-local: origin URL contains embedded credentials; configure Git authentication without credentials in the remote URL")
+		}
+		confirmedFork, err = inspectRefreshRemote(originURL)
+		if err != nil || confirmedFork.identity == "" {
+			return nil, false, fmt.Errorf("--fork-local: origin has no canonical repository identity")
 		}
 		// Persist explicit self-PR routing intent in the existing fork URL
 		// field. Both PR base and branch push target are this same repository.
@@ -130,6 +135,12 @@ func initGate(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL st
 				absRoot)
 		}
 		return nil, false, fmt.Errorf("get origin url: %w", err)
+	}
+	if forkLocal && !sameRefreshIdentity(upstreamURL, confirmedFork.identity) {
+		return nil, false, fmt.Errorf("--fork-local: origin changed after GitHub fork verification")
+	}
+	if forkLocal {
+		forkURL = upstreamURL
 	}
 	// A recorded fork-local route cannot silently become a parent PR route on
 	// plain re-init. The route is the pair of stored URLs naming one

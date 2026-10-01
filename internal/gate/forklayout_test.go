@@ -158,6 +158,34 @@ func TestInitForkLocalRecordsVerifiedSelfPRRoute(t *testing.T) {
 	}
 }
 
+func TestInitForkLocalRefusesOriginChangedAfterForkProof(t *testing.T) {
+	originURL := "https://github.com/fork-owner/no-mistakes.git"
+	parentURL := "https://github.com/parent-owner/no-mistakes.git"
+	wrongURL := "https://github.com/other-owner/no-mistakes.git"
+	work := setupForkLayoutRepo(t, originURL, parentURL)
+	stubResolveForkParent(t, func(context.Context, string) (string, bool, error) {
+		if out, err := exec.Command("git", "-C", work, "remote", "set-url", "origin", wrongURL).CombinedOutput(); err != nil {
+			t.Fatalf("retarget origin after proof: %v: %s", err, out)
+		}
+		return "parent-owner/no-mistakes", true, nil
+	})
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d := openTestDB(t, p)
+
+	if _, _, err := InitForkLocal(context.Background(), d, p, work); err == nil || !strings.Contains(err.Error(), "origin changed after GitHub fork verification") {
+		t.Fatalf("fork-local init must refuse a retargeted origin: %v", err)
+	}
+	if repo, err := d.GetRepoByPath(work); err != nil || repo != nil {
+		t.Fatalf("refused init registered wrong target: repo=%+v err=%v", repo, err)
+	}
+	if entries, err := os.ReadDir(p.ReposDir()); err != nil || len(entries) != 0 {
+		t.Fatalf("refused init provisioned wrong target: entries=%v err=%v", entries, err)
+	}
+}
+
 func TestInitForkLocalPlainRefreshRefusesOriginRetarget(t *testing.T) {
 	originURL := "https://github.com/fork-owner/no-mistakes.git"
 	parentURL := "https://github.com/parent-owner/no-mistakes.git"
