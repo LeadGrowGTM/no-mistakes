@@ -1505,14 +1505,14 @@ func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 
 	branch := "feature/refactor"
 	host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr list --head fork-owner:" + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
+		"gh pr list --head fork-owner:" + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner,headRepository": {
 			stderr: `invalid argument: "--head" does not support "<owner>:<branch>"` + "\n",
 			code:   1,
 		},
-		"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
+		"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner,headRepository": {
 			stdout: `[` +
-				`{"number":40,"url":"https://github.com/parent/repo/pull/40","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"other-owner"}},` +
-				`{"number":42,"url":"https://github.com/parent/repo/pull/42","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}` +
+				`{"number":40,"url":"https://github.com/parent/repo/pull/40","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"other-owner"},"headRepository":{"name":"repo","nameWithOwner":"other-owner/repo"}},` +
+				`{"number":42,"url":"https://github.com/parent/repo/pull/42","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"},"headRepository":{"name":"repo","nameWithOwner":"fork-owner/repo"}}` +
 				`]` + "\n",
 		},
 	}), nil, "", "parent/repo", "fork-owner/repo", false)
@@ -1626,13 +1626,17 @@ func TestFindPRForkRejectsMissingHeadIdentity(t *testing.T) {
 		},
 		{
 			name:   "missing head owner",
-			output: `[{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepositoryOwner":null}]`,
+			output: `[{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepositoryOwner":null,"headRepository":{"name":"repo","nameWithOwner":"fork-owner/repo"}}]`,
+		},
+		{
+			name:   "missing head repository",
+			output: `[{"number":42,"url":"https://github.com/parent/repo/pull/42","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}]`,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
-				"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
+				"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner,headRepository": {
 					stdout: tc.output + "\n",
 				},
 			}), nil, "", "parent/repo", "fork-owner/repo", false)
@@ -1648,6 +1652,25 @@ func TestFindPRForkRejectsMissingHeadIdentity(t *testing.T) {
 				t.Fatalf("FindPR() PR = %+v, want nil", pr)
 			}
 		})
+	}
+}
+
+func TestFindPRForkRejectsSameOwnerDifferentRepository(t *testing.T) {
+	t.Parallel()
+
+	branch := "feature/refactor"
+	host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner,headRepository": {
+			stdout: `[{"number":40,"url":"https://github.com/parent/repo/pull/40","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"},"headRepository":{"name":"other","nameWithOwner":"fork-owner/other"}}]` + "\n",
+		},
+	}), nil, "", "parent/repo", "fork-owner/repo", false)
+
+	pr, err := host.FindPR(context.Background(), branch, "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() = %+v, want nil for a same-owner head from another repository", pr)
 	}
 }
 

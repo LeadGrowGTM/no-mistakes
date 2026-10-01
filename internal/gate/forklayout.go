@@ -138,6 +138,11 @@ func forkOriginParent(ctx context.Context, absRoot string, requireProof bool) (o
 	if !ok || !strings.EqualFold(parentOwner, upstreamOwner) || !strings.EqualFold(parentName, upstreamName) {
 		return "", "", "", fmt.Errorf("GitHub parent %q does not match upstream %q", parentSlug, github.RepoSlug(upstreamRemoteURL))
 	}
+	// GitHub never parents a fork under the fork's own owner. A proof payload
+	// that does so was not produced by a real fork relationship.
+	if strings.EqualFold(parentOwner, originOwner) {
+		return "", "", "", fmt.Errorf("GitHub parent %q has the same owner as origin", parentSlug)
+	}
 	return originURL, upstreamRemoteURL, parentSlug, nil
 }
 

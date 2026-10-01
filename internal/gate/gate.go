@@ -132,12 +132,14 @@ func initGate(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL st
 		return nil, false, fmt.Errorf("get origin url: %w", err)
 	}
 	// A recorded fork-local route cannot silently become a parent PR route on
-	// plain re-init. Permit a URL spelling change only when origin still names
-	// the exact fork, then refresh both recorded targets together.
-	if !forkLocal && forkURL == "" && existing != nil && existing.ForkURL != "" && existing.ForkURL == existing.UpstreamURL {
+	// plain re-init. The route is the pair of stored URLs naming one
+	// repository, including when a refresh spelled them differently. Permit a
+	// URL spelling change only when origin still names that repository, then
+	// refresh both recorded targets together.
+	if !forkLocal && forkURL == "" && existing != nil && isForkLocalSelfRoute(existing) {
 		recorded, recordedErr := inspectRefreshRemote(existing.ForkURL)
 		current, currentErr := inspectRefreshRemote(upstreamURL)
-		if recordedErr != nil || currentErr != nil || recorded.identity != current.identity {
+		if recordedErr != nil || currentErr != nil || recorded.identity == "" || recorded.identity != current.identity {
 			return nil, false, fmt.Errorf("origin no longer names the recorded fork-local repository; use --fork-local to verify a new self-route or --fork-url to select a parent contribution")
 		}
 		forkURL = upstreamURL
@@ -206,6 +208,21 @@ func initGate(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL st
 
 	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", redactedUpstreamURL)
 	return repo, true, nil
+}
+
+// isForkLocalSelfRoute reports whether both stored URLs name one repository.
+// String equality is the value init writes. Identity equality covers a later
+// spelling change that still refers to that same fork.
+func isForkLocalSelfRoute(repo *db.Repo) bool {
+	if repo == nil || strings.TrimSpace(repo.ForkURL) == "" {
+		return false
+	}
+	if repo.ForkURL == repo.UpstreamURL {
+		return true
+	}
+	recordedFork, forkErr := inspectRefreshRemote(repo.ForkURL)
+	recordedUpstream, upstreamErr := inspectRefreshRemote(repo.UpstreamURL)
+	return forkErr == nil && upstreamErr == nil && recordedFork.identity != "" && recordedFork.identity == recordedUpstream.identity
 }
 
 func validateForkRouting(ctx context.Context, upstreamURL, forkURL string) error {

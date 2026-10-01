@@ -568,7 +568,7 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "pr list --head feature --repo parent-owner/no-mistakes --state open --json number,url,baseRefName,headRefName,headRepositoryOwner") {
+	if !strings.Contains(ghLog, "pr list --head feature --repo parent-owner/no-mistakes --state open --json number,url,baseRefName,headRefName,headRepositoryOwner,headRepository") {
 		t.Fatalf("expected PR lookup to use parent repo and bare head branch, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "pr list --head fork-owner:feature") {
@@ -600,7 +600,7 @@ func TestPRStep_GitHubForkLocalCreatesSelfPRWithBareHead(t *testing.T) {
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = append(env, `FAKE_CLI_PR_LIST_JSON=[{"number":40,"url":"https://github.com/fork-owner/no-mistakes/pull/40","baseRefName":"main","headRefName":"feature","headRepositoryOwner":{"login":"foreign-owner"}}]`)
+	sctx.Env = append(env, `FAKE_CLI_PR_LIST_JSON=[{"number":40,"url":"https://github.com/fork-owner/no-mistakes/pull/40","baseRefName":"main","headRefName":"feature","headRepositoryOwner":{"login":"foreign-owner"},"headRepository":{"name":"no-mistakes","nameWithOwner":"foreign-owner/no-mistakes"}},{"number":41,"url":"https://github.com/fork-owner/no-mistakes/pull/41","baseRefName":"main","headRefName":"feature","headRepositoryOwner":{"login":"fork-owner"},"headRepository":{"name":"other","nameWithOwner":"fork-owner/other"}}]`)
 	self := "https://github.com/fork-owner/no-mistakes.git"
 	sctx.Repo.UpstreamURL = self
 	sctx.Repo.ForkURL = self
@@ -615,7 +615,7 @@ func TestPRStep_GitHubForkLocalCreatesSelfPRWithBareHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "pr list --head feature --repo fork-owner/no-mistakes --state open --json number,url,baseRefName,headRefName,headRepositoryOwner") {
+	if !strings.Contains(ghLog, "pr list --head feature --repo fork-owner/no-mistakes --state open --json number,url,baseRefName,headRefName,headRepositoryOwner,headRepository") {
 		t.Fatalf("fork-local lookup must request owner identity to reject foreign heads:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "pr create --head feature --base main --repo fork-owner/no-mistakes") {

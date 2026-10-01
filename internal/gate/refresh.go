@@ -75,10 +75,13 @@ func RefreshRepoURLs(ctx context.Context, database *db.DB, repo *db.Repo) (*db.R
 		if oldErr != nil {
 			return nil, false, refreshFailure(RefreshInvalidRemote)
 		}
-		if repo.ForkURL == repo.UpstreamURL {
-			// --fork-local records the same URL for both targets. Keep that
+		selfRoute := repo.ForkURL == repo.UpstreamURL || sameRefreshIdentity(repo.UpstreamURL, registeredFork.identity)
+		if selfRoute {
+			// --fork-local records one repository for both targets. Keep that
 			// explicit route only while origin still names the registered
 			// fork; an unrelated origin must not silently retarget the PR.
+			// A drifted spelling of the stored pair still counts as self-route
+			// so refresh does not go looking for a second remote.
 			if upstream.identity != registeredFork.identity {
 				return nil, false, refreshFailure(RefreshRemoteUnreadable)
 			}
@@ -216,6 +219,11 @@ func inspectRefreshRemote(raw string) (refreshRemote, error) {
 		return info, fmt.Errorf("partial remote")
 	}
 	return info, nil
+}
+
+func sameRefreshIdentity(raw, identity string) bool {
+	inspected, err := inspectRefreshRemote(raw)
+	return err == nil && inspected.identity != "" && inspected.identity == identity
 }
 
 func refreshRemoteIdentity(raw, remotePath string) string {

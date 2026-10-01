@@ -73,6 +73,26 @@ func TestRefreshRepoURLsForkLocalTracksOnlyItsVerifiedOrigin(t *testing.T) {
 	}
 }
 
+func TestRefreshRepoURLsForkLocalDriftedSpellingStaysOnOrigin(t *testing.T) {
+	const httpsURL = "https://github.com/fork/project.git"
+	const sshURL = "git@github.com:fork/project.git"
+	database, workDir := refreshFixture(t, httpsURL, sshURL)
+	gitTestCmd(t, workDir, "remote", "add", "origin", "ssh://git@github.com/fork/project.git")
+	gitTestCmd(t, workDir, "remote", "add", "upstream", "https://github.com/parent/project.git")
+	repo, err := database.GetRepoByPath(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, err := RefreshRepoURLs(context.Background(), database, repo)
+	if err != nil || !changed {
+		t.Fatalf("drifted fork-local refresh: changed=%t err=%v", changed, err)
+	}
+	const want = "ssh://git@github.com/fork/project.git"
+	if updated.UpstreamURL != want || updated.ForkURL != want {
+		t.Fatalf("drifted self-route must track origin only: %+v", updated)
+	}
+}
+
 func TestRefreshRepoURLsUnchangedIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	const remote = "https://example.com/owner/project.git"
