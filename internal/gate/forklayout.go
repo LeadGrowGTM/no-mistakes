@@ -51,60 +51,11 @@ var resolveForkParent = func(ctx context.Context, remoteURL string) (parentSlug 
 // configured origin=parent, --fork-url=fork setup that happens to also carry
 // an unrelated "upstream" remote.
 func refuseForkOriginMisrouting(ctx context.Context, absRoot string) error {
-	// Read origin's literal configured URL rather than trusting a caller-
-	// supplied value: InitWithFork resolves url.*.insteadOf rewrites for the
-	// non-fork path (git.GetRemoteURL), which would hide the real GitHub host
-	// this check needs behind whatever the rewrite points at.
-	originURL, err := git.GetConfiguredRemoteURL(ctx, absRoot, "origin")
-	if err != nil || strings.TrimSpace(originURL) == "" {
-		return nil
+	originURL, upstreamRemoteURL, parentSlug, err := forkOriginParent(ctx, absRoot, false)
+	if err != nil {
+		return nil // Plain init keeps its historical best-effort detection.
 	}
-	if scm.DetectProviderContext(ctx, originURL) != scm.ProviderGitHub {
-		return nil
-	}
-	hasUpstream, err := git.HasRemote(ctx, absRoot, "upstream")
-	if err != nil || !hasUpstream {
-		return nil
-	}
-	upstreamRemoteURL, err := git.GetConfiguredRemoteURL(ctx, absRoot, "upstream")
-	if err != nil || strings.TrimSpace(upstreamRemoteURL) == "" {
-		return nil
-	}
-	if scm.DetectProviderContext(ctx, upstreamRemoteURL) != scm.ProviderGitHub {
-		return nil
-	}
-	// scm.ProviderGitHub covers any GitHub Enterprise host, not just
-	// github.com, so an origin/upstream pair on different hosts must be
-	// rejected explicitly - matching owner/name alone is not proof they name
-	// the same repository.
-	if !strings.EqualFold(scm.ResolveHost(ctx, originURL), scm.ResolveHost(ctx, upstreamRemoteURL)) {
-		return nil
-	}
-
-	originOwner, originName, ok := splitRepoSlug(github.RepoSlug(originURL))
-	if !ok {
-		return nil
-	}
-	upstreamOwner, upstreamName, ok := splitRepoSlug(github.RepoSlug(upstreamRemoteURL))
-	if !ok {
-		return nil
-	}
-	// A genuine fork always keeps its parent's repo name; skip the network
-	// call entirely for an unrelated "upstream" remote (a different project,
-	// or a same-owner rename) rather than paying gh latency on every init.
-	if strings.EqualFold(originOwner, upstreamOwner) || !strings.EqualFold(originName, upstreamName) {
-		return nil
-	}
-
-	parentSlug, isFork, err := resolveForkParent(ctx, originURL)
-	if err != nil || !isFork || strings.TrimSpace(parentSlug) == "" {
-		return nil
-	}
-	parentOwner, parentName, ok := splitRepoSlug(parentSlug)
-	if !ok || !strings.EqualFold(parentOwner, upstreamOwner) || !strings.EqualFold(parentName, upstreamName) {
-		return nil
-	}
-
+	originOwner, originName, _ := splitRepoSlug(github.RepoSlug(originURL))
 	return fmt.Errorf(
 		"origin (%s/%s) is a GitHub fork of %s, and your 'upstream' remote already points at that parent repository\n\n"+
 			"no-mistakes needs 'origin' pointed at the parent repository, with your fork configured as a separate push target - "+
@@ -112,9 +63,87 @@ func refuseForkOriginMisrouting(ctx context.Context, absRoot string) error {
 			"Fix:\n"+
 			"  git remote set-url origin %s\n"+
 			"  no-mistakes init --fork-url %s\n\n"+
+			"For an intentional PR inside your fork instead, use no-mistakes init --fork-local.\n\n"+
 			"See CONTRIBUTING.md for the full fork workflow.",
 		originOwner, originName, parentSlug, parentSlug,
 		safeurl.Redact(upstreamRemoteURL), safeurl.Redact(originURL))
+}
+
+func confirmedForkOrigin(ctx context.Context, absRoot string) (string, error) {
+	originURL, _, _, err := forkOriginParent(ctx, absRoot, true)
+	if err != nil {
+		return "", fmt.Errorf("requires origin to be a GitHub fork whose 'upstream' remote names its verified parent: %w", err)
+	}
+	return originURL, nil
+}
+
+// forkOriginParent requires positive GitHub proof of the configured topology.
+// Plain init can skip a lookup for unrelated-looking remotes; the explicit
+// route verifies even renamed forks and refuses if proof is unavailable.
+func forkOriginParent(ctx context.Context, absRoot string, requireProof bool) (originURL, upstreamRemoteURL, parentSlug string, err error) {
+	// Read origin's literal configured URL rather than trusting a caller-
+	// supplied value: InitWithFork resolves url.*.insteadOf rewrites for the
+	// non-fork path (git.GetRemoteURL), which would hide the real GitHub host
+	// this check needs behind whatever the rewrite points at.
+	originURL, err = git.GetConfiguredRemoteURL(ctx, absRoot, "origin")
+	if err != nil || strings.TrimSpace(originURL) == "" {
+		return "", "", "", fmt.Errorf("read configured origin: %v", err)
+	}
+	if scm.DetectProviderContext(ctx, originURL) != scm.ProviderGitHub {
+		return "", "", "", fmt.Errorf("origin is not a GitHub remote")
+	}
+	hasUpstream, err := git.HasRemote(ctx, absRoot, "upstream")
+	if err != nil || !hasUpstream {
+		return "", "", "", fmt.Errorf("no 'upstream' remote naming the GitHub fork parent")
+	}
+	upstreamRemoteURL, err = git.GetConfiguredRemoteURL(ctx, absRoot, "upstream")
+	if err != nil || strings.TrimSpace(upstreamRemoteURL) == "" {
+		return "", "", "", fmt.Errorf("read configured upstream: %v", err)
+	}
+	if scm.DetectProviderContext(ctx, upstreamRemoteURL) != scm.ProviderGitHub {
+		return "", "", "", fmt.Errorf("upstream is not a GitHub remote")
+	}
+	// scm.ProviderGitHub covers any GitHub Enterprise host, not just
+	// github.com, so an origin/upstream pair on different hosts must be
+	// rejected explicitly - matching owner/name alone is not proof they name
+	// the same repository.
+	if !strings.EqualFold(scm.ResolveHost(ctx, originURL), scm.ResolveHost(ctx, upstreamRemoteURL)) {
+		return "", "", "", fmt.Errorf("origin and upstream are on different GitHub hosts")
+	}
+
+	originOwner, originName, ok := splitRepoSlug(github.RepoSlug(originURL))
+	if !ok {
+		return "", "", "", fmt.Errorf("origin has no GitHub owner/repository path")
+	}
+	upstreamOwner, upstreamName, ok := splitRepoSlug(github.RepoSlug(upstreamRemoteURL))
+	if !ok {
+		return "", "", "", fmt.Errorf("upstream has no GitHub owner/repository path")
+	}
+	// Plain init keeps its historical cheap unrelated-remote heuristic; an
+	// explicitly selected fork-local route must also accept renamed forks when
+	// GitHub confirms the exact parent slug.
+	if !requireProof && (strings.EqualFold(originOwner, upstreamOwner) || !strings.EqualFold(originName, upstreamName)) {
+		return "", "", "", fmt.Errorf("origin and upstream do not identify a fork/parent repository pair")
+	}
+
+	var isFork bool
+	parentSlug, isFork, err = resolveForkParent(ctx, originURL)
+	if err != nil {
+		return "", "", "", fmt.Errorf("verify GitHub fork parent: %w", err)
+	}
+	if !isFork || strings.TrimSpace(parentSlug) == "" {
+		return "", "", "", fmt.Errorf("GitHub did not confirm origin as a fork with a parent")
+	}
+	parentOwner, parentName, ok := splitRepoSlug(parentSlug)
+	if !ok || !strings.EqualFold(parentOwner, upstreamOwner) || !strings.EqualFold(parentName, upstreamName) {
+		return "", "", "", fmt.Errorf("GitHub parent %q does not match upstream %q", parentSlug, github.RepoSlug(upstreamRemoteURL))
+	}
+	// GitHub never parents a fork under the fork's own owner. A proof payload
+	// that does so was not produced by a real fork relationship.
+	if strings.EqualFold(parentOwner, originOwner) {
+		return "", "", "", fmt.Errorf("GitHub parent %q has the same owner as origin", parentSlug)
+	}
+	return originURL, upstreamRemoteURL, parentSlug, nil
 }
 
 // splitRepoSlug splits an "owner/name" slug, reporting ok=false for anything

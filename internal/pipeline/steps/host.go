@@ -67,8 +67,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		}
 		forkRepo := ""
 		if sctx.Repo.ForkURL != "" {
-			// forkRepo is only used to extract the fork owner for --head owner:branch;
-			// the plain slug (without host prefix) is correct here.
+			// The full slug lets GitHub distinguish a self PR (bare --head)
+			// from a parent PR, while still filtering discoveries by owner.
 			forkRepo = github.RepoSlug(sctx.Repo.ForkURL)
 		}
 		draft := sctx.Config != nil && sctx.Config.Providers.GitHub.DraftPullRequests

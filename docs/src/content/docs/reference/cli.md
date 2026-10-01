@@ -30,12 +30,14 @@ Initialize or refresh the gate for the current repository.
 ```sh
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
+no-mistakes init --fork-local
 no-mistakes init --worktree-root ~/work/my-repo-runs
 ```
 
 | Flag              | Type     | Default | Description                                                                                      |
 | ----------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--fork-url`      | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--fork-url`      | `string` | (none)  | GitHub fork URL for branches while opening PRs against parent `origin`                           |
+| `--fork-local`    | `bool`   | `false` | After GitHub verifies `origin` is a fork of `upstream`, open PRs inside that fork                 |
 | `--worktree-root` | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
 
 Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
@@ -47,8 +49,10 @@ The gate advertises Git push-option support, so you can skip steps for one push 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass `--fork-url` with your fork remote URL.
 The Push step, rebase branch-sync, and CI repair publication use the fork, including when [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs) sends a repair back through Push, while GitHub PR and CI commands stay scoped to the parent repository and create PRs with `--head <fork-owner>:<branch>`.
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
+For a deliberate PR inside your own GitHub fork, leave `origin` pointing at the fork and `upstream` at its parent, then run `no-mistakes init --fork-local` instead of `--fork-url`. GitHub must confirm that `origin` is a fork of exactly that `upstream`; missing authentication, missing remotes, a mismatched parent, or failed proof refuses initialization before gate creation. Use a credential-free remote URL with a Git credential helper, rather than embedding credentials in `origin`. The recorded PR base and branch push target are both `origin`, so the pipeline opens a real PR against your fork's `main` (or configured default branch) and attaches its head-bound attestation there, not to a PR against the parent. The flags cannot be combined.
+Recorded fork-local routes preserve repository identity across equivalent URL spellings during refresh and plain re-initialization; an identity change refuses without retargeting the gate. PR discovery matches the recorded head repository as well as owner and branch, so a same-owner PR from another repository cannot be reused.
 
-Without `--fork-url`, `init` best-effort detects the opposite (and common) fork layout `gh repo fork --clone` leaves behind - `origin` is your own fork and a separate `upstream` remote names the parent - and refuses with guidance instead of silently treating your fork as the parent, which would open PRs and bind attestations inside your fork rather than the project you're contributing to. Detection only fires with positive proof (a GitHub API answer confirming `origin` is a fork of exactly what `upstream` names) and fails open whenever it cannot get that proof - no `upstream` remote, either remote off GitHub, or `gh` unavailable/unauthenticated/offline - so it never blocks a repo that merely happens to have an unrelated `upstream` remote. Fix a refusal by pointing `origin` back at the parent and passing your fork as `--fork-url`, per [CONTRIBUTING.md](https://github.com/kunchenguid/no-mistakes/blob/main/CONTRIBUTING.md).
+Without either fork flag or a previously recorded route, `init` best-effort detects the common `gh repo fork --clone` layout - `origin` is your own fork and a separate `upstream` remote names the parent - and refuses with guidance instead of silently opening PRs inside your fork. Detection only fires with positive proof (a GitHub API answer confirming `origin` is a fork of exactly what `upstream` names) and fails open whenever it cannot get that proof, preserving ordinary initialization. Fix a refusal by pointing `origin` at the parent and supplying `--fork-url`, or explicitly choose `--fork-local` if the PR should be inside your fork.
 
 `--worktree-root` is for directory-scoped toolchain configuration (mise, direnv), which resolves by path ancestry and so never reaches a run worktree under `NM_HOME`.
 The flag resolves the directory, then prints the [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry to add to `~/.no-mistakes/config.yaml`; the global config is hand-maintained, so `init` never rewrites it for you.
@@ -62,8 +66,8 @@ It also refuses to register anything while `~/.no-mistakes/config.yaml` does not
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
-When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
-Passing `--fork-url` again replaces the stored fork URL after validation.
+When a fork URL or fork-local self-route is already recorded, re-running plain `init` preserves it. A recorded fork-local route refuses plain re-init if `origin` now names a different repository; choose `--fork-local` for a newly verified self-route or `--fork-url` to contribute to a parent.
+Passing `--fork-url` again replaces the stored push target after validation; passing `--fork-local` again rechecks GitHub parent proof.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
 If you copy an initialized working directory while the original still exists, the copy is treated as a separate repo and gets a fresh gate.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.

@@ -27,7 +27,8 @@ type Host struct {
 	cliAvailable func() bool
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
-	forkOwner    string // fork owner for cross-repository PR heads
+	forkOwner    string // required head repository owner when a fork route is recorded
+	forkRepo     string // full fork slug; self PR creation uses an unqualified head
 	draft        bool   // open created PRs as drafts (gh pr create --draft)
 	// assetHTTP and assetUploadPrefix override the unofficial user-attachments
 	// upload transport in tests. Production leaves both nil/empty and uses
@@ -55,13 +56,14 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 	}
 }
 
-// NewWithFork builds a Host that opens PRs on repo using forkRepo as the head
-// repository owner. forkRepo is an "owner/name" slug; only the owner is needed
-// because gh pr create expects --head <owner>:<branch>. host is optional; see
-// New for its role in scoping the auth check. draft opens created PRs as drafts.
+// NewWithFork builds a Host whose PR discovery requires forkRepo's owner. A
+// distinct fork repo uses --head <owner>:<branch> on creation, while a self
+// route uses an unqualified branch. host is optional; see New for its role in
+// scoping the auth check. draft opens created PRs as drafts.
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string, draft bool) *Host {
 	h := New(cmd, cliAvailable, host, repo)
 	h.forkOwner = repoOwner(forkRepo)
+	h.forkRepo = strings.TrimSpace(forkRepo)
 	h.draft = draft
 	return h
 }
@@ -127,7 +129,7 @@ func prSelector(pr *scm.PR) (string, error) {
 }
 
 func (h *Host) headRef(branch string) string {
-	if h.forkOwner == "" {
+	if h.forkOwner == "" || strings.EqualFold(h.forkRepo, h.repoSlug()) {
 		return branch
 	}
 	return h.forkOwner + ":" + branch
@@ -244,7 +246,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	args = append(args, h.repoArgs()...)
 	jsonFields := "number,url,baseRefName"
 	if h.forkOwner != "" {
-		jsonFields = "number,url,baseRefName,headRefName,headRepositoryOwner"
+		jsonFields = "number,url,baseRefName,headRefName,headRepositoryOwner,headRepository"
 	}
 	args = append(args, "--state", "open", "--json", jsonFields)
 	cmd := h.cmd(ctx, "gh", args...)
@@ -260,6 +262,10 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		HeadRepositoryOwner *struct {
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
+		HeadRepository *struct {
+			Name          string `json:"name"`
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"headRepository"`
 	}
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, fmt.Errorf("parse gh pr list JSON: %w", err)
@@ -294,10 +300,13 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			if candidate.HeadRepositoryOwner == nil || strings.TrimSpace(candidate.HeadRepositoryOwner.Login) == "" {
 				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRepositoryOwner login", i)
 			}
+			if candidate.HeadRepository == nil || (strings.TrimSpace(candidate.HeadRepository.NameWithOwner) == "" && strings.TrimSpace(candidate.HeadRepository.Name) == "") {
+				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRepository", i)
+			}
 		}
 	}
 	for i, candidate := range prs {
-		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
+		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, candidate.HeadRepository, branch) {
 			continue
 		}
 		pr := &scm.PR{
@@ -312,6 +321,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 
 func (h *Host) matchesHead(headRefName string, owner *struct {
 	Login string `json:"login"`
+}, repo *struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"nameWithOwner"`
 }, branch string) bool {
 	if h.forkOwner == "" {
 		return true
@@ -319,10 +331,28 @@ func (h *Host) matchesHead(headRefName string, owner *struct {
 	if strings.TrimSpace(headRefName) != "" && headRefName != branch {
 		return false
 	}
-	if owner == nil {
+	if owner == nil || !strings.EqualFold(strings.TrimSpace(owner.Login), h.forkOwner) {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(owner.Login), h.forkOwner)
+	return h.matchesForkRepository(repo)
+}
+
+// matchesForkRepository requires the PR head to be the recorded fork
+// repository. Owner login alone collides when that owner has another
+// repository with the same branch name.
+func (h *Host) matchesForkRepository(repo *struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"nameWithOwner"`
+}) bool {
+	if repo == nil {
+		return false
+	}
+	want := strings.Trim(strings.TrimSpace(h.forkRepo), "/")
+	if got := strings.TrimSpace(repo.NameWithOwner); got != "" {
+		return strings.EqualFold(got, want)
+	}
+	_, wantName, ok := strings.Cut(want, "/")
+	return ok && wantName != "" && strings.EqualFold(strings.TrimSpace(repo.Name), wantName)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
