@@ -95,9 +95,9 @@ no-mistakes init --fork-url git@github.com:your-user/repo.git
 
 With this setup, pipeline pushes update the fork, including CI repairs whether they are published immediately or first revalidated under [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs), while the PR and CI steps stay scoped to the parent repository.
 The GitHub PR step opens PRs with a fork-qualified head such as `your-user:feature-branch`.
-Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`.
+Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`. For a deliberate PR inside your own fork, use the verified `--fork-local` route described in the [CLI reference](/no-mistakes/reference/cli/#init).
 
-Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
+This parent-contribution route requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
 GitLab, Forgejo, Bitbucket, and Azure DevOps fork MR/PR routing are not implemented yet; if a legacy or manually edited repo record has `fork_url` set for those providers, PR creation skips instead of opening an unsafe self PR.
 
 #### Workflow-file changes require the `workflow` scope
@@ -271,7 +271,7 @@ Running `gh auth login --hostname your-ghe.example.com` is enough to make detect
 
 On GHE, `gh --repo` expects a host-prefixed slug in the form `host/owner/name`.
 `no-mistakes` builds that automatically from the recorded upstream remote or PR URL, so daemon-run `gh` commands resolve the right repository regardless of the daemon's working directory.
-The fork owner extracted from the fork URL keeps the plain `owner/name` form because that side only feeds `--head owner:branch`.
+For parent-contribution routes, the fork slug supplies `--head owner:branch`; a verified fork-local route instead creates a self PR with a bare branch head. In both cases, discovery matches the recorded fork repository, not only its owner.
 
 ### Self-hosted GitLab
 

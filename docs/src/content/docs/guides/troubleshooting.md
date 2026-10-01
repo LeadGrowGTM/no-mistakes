@@ -208,7 +208,7 @@ git remote set-url origin https://<new-token>@github.com/<owner>/<repo>.git
 no-mistakes init
 ```
 
-If you push to a fork (see [GitHub fork contributions](/no-mistakes/guides/provider-integration/#github-fork-contributions)), the fork URL is stored separately and a bare `no-mistakes init` preserves it. Pass the refreshed URL explicitly:
+For parent-contribution fork routing (see [GitHub fork contributions](/no-mistakes/guides/provider-integration/#github-fork-contributions)), the fork URL is stored separately and a bare `no-mistakes init` preserves it. Pass the refreshed URL explicitly:
 
 ```sh
 no-mistakes init --fork-url https://<new-token>@github.com/<fork-owner>/<repo>.git
