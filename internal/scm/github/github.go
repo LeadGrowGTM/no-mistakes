@@ -27,7 +27,8 @@ type Host struct {
 	cliAvailable func() bool
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
-	forkOwner    string // fork owner for cross-repository PR heads
+	forkOwner    string // required head repository owner when a fork route is recorded
+	forkRepo     string // full fork slug; self PR creation uses an unqualified head
 	draft        bool   // open created PRs as drafts (gh pr create --draft)
 	// assetHTTP and assetUploadPrefix override the unofficial user-attachments
 	// upload transport in tests. Production leaves both nil/empty and uses
@@ -55,13 +56,14 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 	}
 }
 
-// NewWithFork builds a Host that opens PRs on repo using forkRepo as the head
-// repository owner. forkRepo is an "owner/name" slug; only the owner is needed
-// because gh pr create expects --head <owner>:<branch>. host is optional; see
-// New for its role in scoping the auth check. draft opens created PRs as drafts.
+// NewWithFork builds a Host whose PR discovery requires forkRepo's owner. A
+// distinct fork repo uses --head <owner>:<branch> on creation, while a self
+// route uses an unqualified branch. host is optional; see New for its role in
+// scoping the auth check. draft opens created PRs as drafts.
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string, draft bool) *Host {
 	h := New(cmd, cliAvailable, host, repo)
 	h.forkOwner = repoOwner(forkRepo)
+	h.forkRepo = strings.TrimSpace(forkRepo)
 	h.draft = draft
 	return h
 }
@@ -127,7 +129,7 @@ func prSelector(pr *scm.PR) (string, error) {
 }
 
 func (h *Host) headRef(branch string) string {
-	if h.forkOwner == "" {
+	if h.forkOwner == "" || strings.EqualFold(h.forkRepo, h.repoSlug()) {
 		return branch
 	}
 	return h.forkOwner + ":" + branch

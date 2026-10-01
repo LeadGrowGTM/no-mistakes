@@ -101,6 +101,7 @@ func TestInitRefusesForkOriginWhenUpstreamNamesTheRealParent(t *testing.T) {
 		"parent-owner/no-mistakes",
 		"git remote set-url origin",
 		"--fork-url",
+		"--fork-local",
 		"CONTRIBUTING.md",
 	} {
 		if !strings.Contains(msg, want) {
@@ -118,6 +119,140 @@ func TestInitRefusesForkOriginWhenUpstreamNamesTheRealParent(t *testing.T) {
 	}
 	if repo != nil {
 		t.Fatalf("refused init must not register a repo, got %+v", repo)
+	}
+}
+
+func TestInitForkLocalRecordsVerifiedSelfPRRoute(t *testing.T) {
+	originURL := "https://github.com/fork-owner/no-mistakes.git"
+	parentURL := "https://github.com/parent-owner/no-mistakes.git"
+	work := setupForkLayoutRepo(t, originURL, parentURL)
+	calls := stubResolveForkParent(t, func(_ context.Context, remoteURL string) (string, bool, error) {
+		if remoteURL != originURL {
+			t.Fatalf("GitHub proof requested for %q, want %q", remoteURL, originURL)
+		}
+		return "parent-owner/no-mistakes", true, nil
+	})
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	repo, created, err := InitForkLocal(ctx, d, p, work)
+	if err != nil || !created {
+		t.Fatalf("fork-local init: created=%t err=%v", created, err)
+	}
+	if repo.UpstreamURL != originURL || repo.ForkURL != originURL || repo.PushURL() != originURL {
+		t.Fatalf("fork-local base and push must be origin: %+v", repo)
+	}
+	if got, err := exec.Command("git", "-C", p.RepoDir(repo.ID), "config", "--get", "remote.origin.url").Output(); err != nil || strings.TrimSpace(string(got)) != originURL {
+		t.Fatalf("gate PR remote = %q, err=%v; want %q", got, err, originURL)
+	}
+	if *calls != 1 {
+		t.Fatalf("GitHub proof requested %d times, want 1", *calls)
+	}
+	refreshed, created, err := Init(ctx, d, p, work)
+	if err != nil || created || refreshed.ForkURL != originURL || refreshed.UpstreamURL != originURL {
+		t.Fatalf("plain refresh must preserve intentional fork-local routing: repo=%+v created=%t err=%v", refreshed, created, err)
+	}
+}
+
+func TestInitForkLocalPlainRefreshRefusesOriginRetarget(t *testing.T) {
+	originURL := "https://github.com/fork-owner/no-mistakes.git"
+	parentURL := "https://github.com/parent-owner/no-mistakes.git"
+	work := setupForkLayoutRepo(t, originURL, parentURL)
+	stubResolveForkParent(t, func(context.Context, string) (string, bool, error) {
+		return "parent-owner/no-mistakes", true, nil
+	})
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+	original, _, err := InitForkLocal(ctx, d, p, work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", work, "remote", "set-url", "origin", parentURL).CombinedOutput(); err != nil {
+		t.Fatalf("retarget clone origin: %v: %s", err, out)
+	}
+
+	if _, _, err := Init(ctx, d, p, work); err == nil || !strings.Contains(err.Error(), "origin no longer names the recorded fork-local repository") {
+		t.Fatalf("plain re-init must reject a new PR base: %v", err)
+	}
+	stored, err := d.GetRepoByPath(work)
+	if err != nil || stored.UpstreamURL != originURL || stored.ForkURL != originURL {
+		t.Fatalf("plain refusal changed registered PR route: repo=%+v err=%v", stored, err)
+	}
+	if got, err := exec.Command("git", "-C", p.RepoDir(original.ID), "config", "--get", "remote.origin.url").Output(); err != nil || strings.TrimSpace(string(got)) != originURL {
+		t.Fatalf("plain refusal rewired gate: origin=%q err=%v", got, err)
+	}
+	converted, created, err := InitWithFork(ctx, d, p, work, originURL)
+	if err != nil || created || converted.UpstreamURL != parentURL || converted.ForkURL != originURL {
+		t.Fatalf("explicit parent contribution must still work: repo=%+v created=%t err=%v", converted, created, err)
+	}
+}
+
+func TestInitForkLocalAcceptsGitHubVerifiedRenamedFork(t *testing.T) {
+	originURL := "https://github.com/fork-owner/renamed.git"
+	parentURL := "https://github.com/parent-owner/original.git"
+	work := setupForkLayoutRepo(t, originURL, parentURL)
+	stubResolveForkParent(t, func(context.Context, string) (string, bool, error) {
+		return "parent-owner/original", true, nil
+	})
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d := openTestDB(t, p)
+	repo, _, err := InitForkLocal(context.Background(), d, p, work)
+	if err != nil {
+		t.Fatalf("GitHub-verified renamed fork refused: %v", err)
+	}
+	if repo.UpstreamURL != originURL || repo.ForkURL != originURL {
+		t.Fatalf("renamed fork must still target itself: %+v", repo)
+	}
+}
+
+func TestInitForkLocalRequiresPositiveGitHubParentProof(t *testing.T) {
+	for _, tc := range []struct {
+		name, upstreamURL, parentSlug string
+		isFork                        bool
+		proofErr                      error
+	}{
+		{name: "no upstream"},
+		{name: "unverified", upstreamURL: "https://github.com/parent-owner/no-mistakes.git", proofErr: errFakeGHUnavailable},
+		{name: "not a fork", upstreamURL: "https://github.com/parent-owner/no-mistakes.git"},
+		{name: "different parent", upstreamURL: "https://github.com/parent-owner/no-mistakes.git", parentSlug: "other-owner/no-mistakes", isFork: true},
+		{name: "different host", upstreamURL: "https://github.enterprise.example/parent-owner/no-mistakes.git", parentSlug: "parent-owner/no-mistakes", isFork: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := setupForkLayoutRepo(t, "https://github.com/fork-owner/no-mistakes.git", tc.upstreamURL)
+			calls := stubResolveForkParent(t, func(context.Context, string) (string, bool, error) {
+				return tc.parentSlug, tc.isFork, tc.proofErr
+			})
+			p := paths.WithRoot(t.TempDir())
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			d := openTestDB(t, p)
+			if _, _, err := InitForkLocal(context.Background(), d, p, work); err == nil || !strings.Contains(err.Error(), "--fork-local") {
+				t.Fatalf("missing fork proof must refuse without provisioning: %v", err)
+			}
+			if repo, err := d.GetRepoByPath(work); err != nil || repo != nil {
+				t.Fatalf("refused init registered repo: %+v, err=%v", repo, err)
+			}
+			if entries, err := os.ReadDir(p.ReposDir()); err != nil || len(entries) != 0 {
+				t.Fatalf("refused init provisioned gate: entries=%v err=%v", entries, err)
+			}
+			if tc.name == "no upstream" || tc.name == "different host" {
+				if *calls != 0 {
+					t.Fatalf("GitHub lookup called before topology matched: %d", *calls)
+				}
+			}
+		})
 	}
 }
 

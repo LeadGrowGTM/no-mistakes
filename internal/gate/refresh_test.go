@@ -49,6 +49,30 @@ func TestRefreshRepoURLsRefreshesUpstreamAndForkTogether(t *testing.T) {
 	}
 }
 
+func TestRefreshRepoURLsForkLocalTracksOnlyItsVerifiedOrigin(t *testing.T) {
+	const oldURL = "git@github.com:fork/project.git"
+	const newURL = "https://github.com/fork/project.git"
+	database, workDir := refreshFixture(t, oldURL, oldURL)
+	gitTestCmd(t, workDir, "remote", "add", "origin", newURL)
+	gitTestCmd(t, workDir, "remote", "add", "upstream", "https://github.com/parent/project.git")
+	repo, err := database.GetRepoByPath(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, changed, err := RefreshRepoURLs(context.Background(), database, repo)
+	if err != nil || !changed {
+		t.Fatalf("fork-local refresh: changed=%t err=%v", changed, err)
+	}
+	if updated.UpstreamURL != newURL || updated.ForkURL != newURL || !updated.URLsVerified {
+		t.Fatalf("fork-local base and push must both track origin: %+v", updated)
+	}
+	unchanged, changed, err := RefreshRepoURLs(context.Background(), database, updated)
+	if err != nil || changed || unchanged.UpstreamURL != newURL || unchanged.ForkURL != newURL || !unchanged.URLsVerified {
+		t.Fatalf("fork-local recheck must preserve self-route: repo=%+v changed=%t err=%v", unchanged, changed, err)
+	}
+}
+
 func TestRefreshRepoURLsUnchangedIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	const remote = "https://example.com/owner/project.git"
@@ -138,6 +162,16 @@ func TestRefreshRepoURLsFailurePreservesExactRegistration(t *testing.T) {
 				gitTestCmd(t, dir, "remote", "add", "fork-b", "ssh://git@example.com/fork/project.git")
 			},
 			wantReason: RefreshAmbiguousRemote,
+		},
+		{
+			name:   "fork-local origin replaced by a different repository",
+			origin: "https://github.com/fork/project.git",
+			fork:   "https://github.com/fork/project.git",
+			addRemotes: func(t *testing.T, dir string) {
+				gitTestCmd(t, dir, "remote", "add", "origin", "https://github.com/parent/project.git")
+				gitTestCmd(t, dir, "remote", "add", "upstream", "https://github.com/parent/project.git")
+			},
+			wantReason: RefreshRemoteUnreadable,
 		},
 	}
 

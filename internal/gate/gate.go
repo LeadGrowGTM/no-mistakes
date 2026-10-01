@@ -55,6 +55,16 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // remains the parent repository used for PRs. When forkURL is empty, an
 // existing fork setting is preserved across idempotent refreshes.
 func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
+	return initGate(ctx, d, p, workDir, forkURL, false)
+}
+
+// InitForkLocal explicitly targets PRs and branch pushes at the GitHub fork
+// named by origin. GitHub must confirm that upstream names that fork's parent.
+func InitForkLocal(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
+	return initGate(ctx, d, p, workDir, "", true)
+}
+
+func initGate(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string, forkLocal bool) (*db.Repo, bool, error) {
 	if classified, err := (gatecontext.Inspector{DB: d, Paths: p}).Inspect(ctx, gatecontext.Request{CWD: workDir, MarkerPresent: gatecontext.MarkerPresent()}); err != nil {
 		return nil, false, err
 	} else if classified.Nested {
@@ -69,6 +79,18 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		return nil, false, fmt.Errorf("find git root: %w", err)
 	}
 	absRoot := gitRoot
+	if forkLocal {
+		originURL, err := confirmedForkOrigin(ctx, absRoot)
+		if err != nil {
+			return nil, false, fmt.Errorf("--fork-local: %w", err)
+		}
+		if safeurl.Redact(originURL) != originURL {
+			return nil, false, fmt.Errorf("--fork-local: origin URL contains embedded credentials; configure Git authentication without credentials in the remote URL")
+		}
+		// Persist explicit self-PR routing intent in the existing fork URL
+		// field. Both PR base and branch push target are this same repository.
+		forkURL = originURL
+	}
 
 	// Look up any existing gate so we know whether this is a fresh init or a
 	// refresh, and so we never tear down a working gate on a repair failure.
@@ -87,9 +109,9 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 
 	// Read origin URL. Keep the historical rewritten value for non-fork repos,
-	// but preserve the literal parent URL when fork routing is configured.
+	// but preserve the literal GitHub URL when fork routing is configured.
 	getOriginURL := git.GetRemoteURL
-	if forkURL != "" || (existing != nil && strings.TrimSpace(existing.ForkURL) != "") {
+	if forkLocal || forkURL != "" || (existing != nil && strings.TrimSpace(existing.ForkURL) != "") {
 		getOriginURL = git.GetConfiguredRemoteURL
 	}
 	upstreamURL, err := getOriginURL(ctx, absRoot, "origin")
@@ -108,6 +130,17 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 				absRoot)
 		}
 		return nil, false, fmt.Errorf("get origin url: %w", err)
+	}
+	// A recorded fork-local route cannot silently become a parent PR route on
+	// plain re-init. Permit a URL spelling change only when origin still names
+	// the exact fork, then refresh both recorded targets together.
+	if !forkLocal && forkURL == "" && existing != nil && existing.ForkURL != "" && existing.ForkURL == existing.UpstreamURL {
+		recorded, recordedErr := inspectRefreshRemote(existing.ForkURL)
+		current, currentErr := inspectRefreshRemote(upstreamURL)
+		if recordedErr != nil || currentErr != nil || recorded.identity != current.identity {
+			return nil, false, fmt.Errorf("origin no longer names the recorded fork-local repository; use --fork-local to verify a new self-route or --fork-url to select a parent contribution")
+		}
+		forkURL = upstreamURL
 	}
 	if forkURL != "" {
 		if err := validateForkRouting(ctx, upstreamURL, forkURL); err != nil {

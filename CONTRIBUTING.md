@@ -31,6 +31,8 @@ Every `opened` or `edited` event gets an independent run, including first-time-f
 6. Run `no-mistakes` to attach to the pipeline, watch findings, and auto-fix or review as needed.
 7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against the parent repo for you.
 
+To open a PR inside your own fork instead of contributing to this parent repository, leave `origin` at your fork and `upstream` at its parent, then use `no-mistakes init --fork-local`. GitHub must verify that relationship before the gate is created. Branch push, PR base, CI and the generated head-bound attestation then target your fork, not this parent. Plain `init` still refuses the proven fork-as-origin layout; `--fork-url` keeps the parent-contribution route above.
+
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
 ## Repo conventions

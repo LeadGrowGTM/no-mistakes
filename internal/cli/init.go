@@ -26,6 +26,7 @@ const banner = `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 
 func newInitCmd() *cobra.Command {
 	var forkURL string
+	var forkLocal bool
 	var worktreeRoot string
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -46,6 +47,9 @@ func newInitCmd() *cobra.Command {
 				if cmd.Flags().Changed("fork-url") && strings.TrimSpace(forkURL) == "" {
 					return fmt.Errorf("init: --fork-url must not be empty")
 				}
+				if forkLocal && cmd.Flags().Changed("fork-url") {
+					return fmt.Errorf("init: --fork-local and --fork-url cannot be combined")
+				}
 				if err := assertCheckoutHoldsNoConfiguredWorktreeRoot(p, "."); err != nil {
 					return err
 				}
@@ -56,7 +60,13 @@ func newInitCmd() *cobra.Command {
 						return err
 					}
 				}
-				repo, created, err := gate.InitWithFork(cmd.Context(), d, p, ".", forkURL)
+				var repo *db.Repo
+				var created bool
+				if forkLocal {
+					repo, created, err = gate.InitForkLocal(cmd.Context(), d, p, ".")
+				} else {
+					repo, created, err = gate.InitWithFork(cmd.Context(), d, p, ".", forkURL)
+				}
 				if err != nil {
 					return fmt.Errorf("init: %w", err)
 				}
@@ -114,6 +124,7 @@ func newInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
+	cmd.Flags().BoolVar(&forkLocal, "fork-local", false, "Open PRs inside the verified GitHub fork at origin, using upstream only to prove its parent")
 	cmd.Flags().StringVar(&worktreeRoot, "worktree-root", "", "Directory to create this repository's run worktrees in, so directory-scoped toolchain config (mise, direnv) reaches them; prints the worktree_roots entry to add to the global config")
 	return cmd
 }

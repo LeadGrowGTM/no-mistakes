@@ -44,8 +44,9 @@ func refreshFailure(reason RefreshFailureReason) error {
 
 // RefreshRepoURLs best-effort discovers the current registered targets from
 // the working clone and atomically replaces both URL fields. Origin remains the
-// authoritative upstream source. An existing fork is refreshed only when one
-// unique clone remote still identifies that same fork repository.
+// authoritative upstream source. An existing separate fork is refreshed only
+// when one unique clone remote still identifies that same fork repository;
+// a recorded fork-local self-route uses origin for both fields.
 //
 // It never mutates Git configuration. Every failure is deliberately URL-free
 // so callers can safely log only ReasonForRefreshFailure and continue with the
@@ -74,51 +75,61 @@ func RefreshRepoURLs(ctx context.Context, database *db.DB, repo *db.Repo) (*db.R
 		if oldErr != nil {
 			return nil, false, refreshFailure(RefreshInvalidRemote)
 		}
-		remoteNames, listErr := git.Run(ctx, repo.WorkingPath, "remote")
-		if listErr != nil {
-			return nil, false, refreshFailure(RefreshRemoteUnreadable)
-		}
-		type forkCandidate struct {
-			name string
-			url  string
-		}
-		var candidates []forkCandidate
-		for _, name := range strings.Fields(remoteNames) {
-			if name == "origin" || name == RemoteName {
-				continue
-			}
-			candidateURLs, readErr := git.GetConfiguredRemoteURLs(ctx, repo.WorkingPath, name)
-			if readErr != nil || len(candidateURLs) == 0 {
+		if repo.ForkURL == repo.UpstreamURL {
+			// --fork-local records the same URL for both targets. Keep that
+			// explicit route only while origin still names the registered
+			// fork; an unrelated origin must not silently retarget the PR.
+			if upstream.identity != registeredFork.identity {
 				return nil, false, refreshFailure(RefreshRemoteUnreadable)
 			}
-			if len(candidateURLs) != 1 {
+			forkURL = upstream.raw
+		} else {
+			remoteNames, listErr := git.Run(ctx, repo.WorkingPath, "remote")
+			if listErr != nil {
+				return nil, false, refreshFailure(RefreshRemoteUnreadable)
+			}
+			type forkCandidate struct {
+				name string
+				url  string
+			}
+			var candidates []forkCandidate
+			for _, name := range strings.Fields(remoteNames) {
+				if name == "origin" || name == RemoteName {
+					continue
+				}
+				candidateURLs, readErr := git.GetConfiguredRemoteURLs(ctx, repo.WorkingPath, name)
+				if readErr != nil || len(candidateURLs) == 0 {
+					return nil, false, refreshFailure(RefreshRemoteUnreadable)
+				}
+				if len(candidateURLs) != 1 {
+					return nil, false, refreshFailure(RefreshAmbiguousRemote)
+				}
+				candidateURL := candidateURLs[0]
+				candidate, candidateErr := inspectRefreshRemote(candidateURL)
+				if candidateErr != nil {
+					if name == "fork" || candidate.identity == registeredFork.identity {
+						return nil, false, refreshFailure(RefreshInvalidRemote)
+					}
+					continue
+				}
+				if candidate.identity == registeredFork.identity {
+					candidates = append(candidates, forkCandidate{name: name, url: candidate.raw})
+				}
+			}
+			if len(candidates) == 0 {
+				return nil, false, refreshFailure(RefreshRemoteUnreadable)
+			}
+			if len(candidates) != 1 {
 				return nil, false, refreshFailure(RefreshAmbiguousRemote)
 			}
-			candidateURL := candidateURLs[0]
-			candidate, candidateErr := inspectRefreshRemote(candidateURL)
-			if candidateErr != nil {
-				if name == "fork" || candidate.identity == registeredFork.identity {
-					return nil, false, refreshFailure(RefreshInvalidRemote)
-				}
-				continue
+			forkURL = candidates[0].url
+			// Re-read the selected fork source immediately before replacement. A
+			// concurrent git-config edit makes the source ambiguous rather than
+			// allowing a mixed snapshot into the registry.
+			confirmed, confirmErr := git.GetConfiguredRemoteURLs(ctx, repo.WorkingPath, candidates[0].name)
+			if confirmErr != nil || len(confirmed) != 1 || confirmed[0] != forkURL {
+				return nil, false, refreshFailure(RefreshAmbiguousRemote)
 			}
-			if candidate.identity == registeredFork.identity {
-				candidates = append(candidates, forkCandidate{name: name, url: candidate.raw})
-			}
-		}
-		if len(candidates) == 0 {
-			return nil, false, refreshFailure(RefreshRemoteUnreadable)
-		}
-		if len(candidates) != 1 {
-			return nil, false, refreshFailure(RefreshAmbiguousRemote)
-		}
-		forkURL = candidates[0].url
-		// Re-read the selected fork source immediately before replacement. A
-		// concurrent git-config edit makes the source ambiguous rather than
-		// allowing a mixed snapshot into the registry.
-		confirmed, confirmErr := git.GetConfiguredRemoteURLs(ctx, repo.WorkingPath, candidates[0].name)
-		if confirmErr != nil || len(confirmed) != 1 || confirmed[0] != forkURL {
-			return nil, false, refreshFailure(RefreshAmbiguousRemote)
 		}
 	}
 

@@ -588,6 +588,44 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 }
 
+func TestPRStep_GitHubForkLocalCreatesSelfPRWithBareHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ensureLocalBranch(t, dir, "main", baseSHA)
+	env, logFile := fakeGH(t, "")
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"title":"fix: local fork pr","body":"## Summary\n\n- local fork PR"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = append(env, `FAKE_CLI_PR_LIST_JSON=[{"number":40,"url":"https://github.com/fork-owner/no-mistakes/pull/40","baseRefName":"main","headRefName":"feature","headRepositoryOwner":{"login":"foreign-owner"}}]`)
+	self := "https://github.com/fork-owner/no-mistakes.git"
+	sctx.Repo.UpstreamURL = self
+	sctx.Repo.ForkURL = self
+	sctx.Config.PR.BaseBranch = "main"
+	sctx.Run.Branch = "refs/heads/feature"
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "pr list --head feature --repo fork-owner/no-mistakes --state open --json number,url,baseRefName,headRefName,headRepositoryOwner") {
+		t.Fatalf("fork-local lookup must request owner identity to reject foreign heads:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "pr create --head feature --base main --repo fork-owner/no-mistakes") {
+		t.Fatalf("expected self PR from unqualified head, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "parent-owner/no-mistakes") || strings.Contains(ghLog, "--head fork-owner:feature") {
+		t.Fatalf("fork-local PR must not route to parent or fork-qualify its own head:\n%s", ghLog)
+	}
+}
+
 func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
